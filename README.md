@@ -145,20 +145,11 @@ CREATE TABLE custom (
 ## Testing
 
 ```bash
-# Run unit tests (y-better-sqlite3 only)
 npm test
-
-# Run integration tests with js-bao (may have Yjs import issues)
-npm run test:integration
-
-# Run all tests
-npm run test:all
 
 # Watch mode
 npm run test:watch
 ```
-
-**Note**: Integration tests may fail with "Unexpected content type" due to Yjs version mismatch when multiple copies of Yjs are loaded. This is a [known Yjs issue](https://github.com/yjs/yjs/issues/438). The unit tests validate y-better-sqlite3 functionality independently.
 
 ## License
 

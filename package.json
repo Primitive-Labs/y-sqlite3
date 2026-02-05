@@ -20,9 +20,7 @@
   "scripts": {
     "build": "tsup src/y-better-sqlite3.ts --format esm,cjs --dts --clean",
     "build:watch": "tsup src/y-better-sqlite3.ts --format esm,cjs --dts --watch",
-    "test": "vitest run tests/y-better-sqlite3.test.ts",
-    "test:integration": "vitest run tests/js-bao-integration.test.ts",
-    "test:all": "vitest run",
+    "test": "vitest run",
     "test:watch": "vitest",
     "prepublishOnly": "npm run build"
   },
