@@ -1,4 +1,4 @@
-# y-better-sqlite3
+# y-sqlite3
 
 SQLite persistence provider for [Yjs](https://yjs.dev) using [better-sqlite3](https://github.com/WiseLibs/better-sqlite3).
 
@@ -15,13 +15,13 @@ This package provides the same functionality as [y-indexeddb](https://github.com
 ## Installation
 
 ```bash
-npm install y-better-sqlite3 yjs
+npm install y-sqlite3 yjs
 ```
 
 ## Usage
 
 ```typescript
-import { SqlitePersistence } from 'y-better-sqlite3';
+import { SqlitePersistence } from 'y-sqlite3';
 import * as Y from 'yjs';
 
 const doc = new Y.Doc();
@@ -46,7 +46,7 @@ ymap.set('key', 'value');
 
 ```typescript
 import { initJsBao } from 'js-bao/node';
-import { SqlitePersistence } from 'y-better-sqlite3';
+import { SqlitePersistence } from 'y-sqlite3';
 import * as Y from 'yjs';
 
 // Create document with SQLite persistence
@@ -135,8 +135,8 @@ CREATE TABLE custom (
 
 ## Differences from y-indexeddb
 
-| Feature | y-indexeddb | y-better-sqlite3 |
-|---------|-------------|------------------|
+| Feature | y-indexeddb | y-sqlite3 |
+|---------|-------------|-----------|
 | Environment | Browser | Node.js |
 | Storage | IndexedDB | SQLite |
 | Async | Fully async | Sync with async wrapper |
