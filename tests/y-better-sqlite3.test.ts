@@ -16,14 +16,14 @@ const TEST_DIR = "./test-dbs";
 let testCounter = 0;
 const getTestName = () => `test-doc-${Date.now()}-${testCounter++}`;
 
-// Helper to count entries in the updates table
-const getUpdateCount = (name: string): number => {
-  const dbPath = `${TEST_DIR}/${name}.sqlite`;
+// Helper to count entries in the updates table for a given doc
+const getUpdateCount = (name: string, dbPathOverride?: string): number => {
+  const dbPath = dbPathOverride ?? `${TEST_DIR}/${name}.sqlite`;
   if (!fs.existsSync(dbPath)) return 0;
   const db = new Database(dbPath);
-  const result = db.prepare("SELECT COUNT(*) as count FROM updates").get() as {
-    count: number;
-  };
+  const result = db
+    .prepare("SELECT COUNT(*) as count FROM updates WHERE docName = ?")
+    .get(name) as { count: number };
   db.close();
   return result.count;
 };
@@ -446,6 +446,226 @@ describe("SqlitePersistence", () => {
       await p2.destroy();
       doc1.destroy();
       doc2.destroy();
+    });
+  });
+
+  describe("Multi-document support", () => {
+    const SHARED_DB = `${TEST_DIR}/shared.sqlite`;
+
+    it("should isolate two docs in one database", async () => {
+      const docA = new Y.Doc();
+      const docB = new Y.Doc();
+      const pA = new SqlitePersistence("doc-a", docA, { dbPath: SHARED_DB });
+      const pB = new SqlitePersistence("doc-b", docB, { dbPath: SHARED_DB });
+      await pA.whenSynced;
+      await pB.whenSynced;
+
+      docA.getMap("test").set("key", "from-a");
+      docB.getMap("test").set("key", "from-b");
+      await wait(50);
+
+      // Each doc sees only its own data
+      expect(docA.getMap("test").get("key")).toBe("from-a");
+      expect(docB.getMap("test").get("key")).toBe("from-b");
+
+      await pA.destroy();
+      await pB.destroy();
+      docA.destroy();
+      docB.destroy();
+    });
+
+    it("should persist across sessions", async () => {
+      // Session 1
+      const docA1 = new Y.Doc();
+      const docB1 = new Y.Doc();
+      const pA1 = new SqlitePersistence("doc-a", docA1, { dbPath: SHARED_DB });
+      const pB1 = new SqlitePersistence("doc-b", docB1, { dbPath: SHARED_DB });
+      await pA1.whenSynced;
+      await pB1.whenSynced;
+
+      docA1.getMap("test").set("val", "alpha");
+      docB1.getMap("test").set("val", "beta");
+      await wait(50);
+
+      await pA1.destroy();
+      await pB1.destroy();
+      docA1.destroy();
+      docB1.destroy();
+
+      // Session 2
+      const docA2 = new Y.Doc();
+      const docB2 = new Y.Doc();
+      const pA2 = new SqlitePersistence("doc-a", docA2, { dbPath: SHARED_DB });
+      const pB2 = new SqlitePersistence("doc-b", docB2, { dbPath: SHARED_DB });
+      await pA2.whenSynced;
+      await pB2.whenSynced;
+
+      expect(docA2.getMap("test").get("val")).toBe("alpha");
+      expect(docB2.getMap("test").get("val")).toBe("beta");
+
+      await pA2.destroy();
+      await pB2.destroy();
+      docA2.destroy();
+      docB2.destroy();
+    });
+
+    it("clearDocument on shared db should only clear the named doc", async () => {
+      const docA = new Y.Doc();
+      const docB = new Y.Doc();
+      const pA = new SqlitePersistence("doc-a", docA, { dbPath: SHARED_DB });
+      const pB = new SqlitePersistence("doc-b", docB, { dbPath: SHARED_DB });
+      await pA.whenSynced;
+      await pB.whenSynced;
+
+      docA.getMap("test").set("key", "a-val");
+      docB.getMap("test").set("key", "b-val");
+      await wait(50);
+
+      await pA.destroy();
+      await pB.destroy();
+      docA.destroy();
+      docB.destroy();
+
+      // Clear only doc-a
+      clearDocument("doc-a", { dbPath: SHARED_DB });
+
+      // File should still exist
+      expect(fs.existsSync(SHARED_DB)).toBe(true);
+
+      // Reopen doc-b — data should be intact
+      const docB2 = new Y.Doc();
+      const pB2 = new SqlitePersistence("doc-b", docB2, { dbPath: SHARED_DB });
+      await pB2.whenSynced;
+      expect(docB2.getMap("test").get("key")).toBe("b-val");
+
+      // Reopen doc-a — data should be gone
+      const docA2 = new Y.Doc();
+      const pA2 = new SqlitePersistence("doc-a", docA2, { dbPath: SHARED_DB });
+      await pA2.whenSynced;
+      expect(docA2.getMap("test").get("key")).toBeUndefined();
+
+      await pA2.destroy();
+      await pB2.destroy();
+      docA2.destroy();
+      docB2.destroy();
+    });
+
+    it("should isolate custom values between docs", async () => {
+      const docA = new Y.Doc();
+      const docB = new Y.Doc();
+      const pA = new SqlitePersistence("doc-a", docA, { dbPath: SHARED_DB });
+      const pB = new SqlitePersistence("doc-b", docB, { dbPath: SHARED_DB });
+      await pA.whenSynced;
+      await pB.whenSynced;
+
+      // Same key, different values
+      pA.set("shared-key", "value-a");
+      pB.set("shared-key", "value-b");
+
+      expect(pA.get("shared-key")).toBe("value-a");
+      expect(pB.get("shared-key")).toBe("value-b");
+
+      // Delete from one doc doesn't affect the other
+      pA.del("shared-key");
+      expect(pA.get("shared-key")).toBeUndefined();
+      expect(pB.get("shared-key")).toBe("value-b");
+
+      await pA.destroy();
+      await pB.destroy();
+      docA.destroy();
+      docB.destroy();
+    });
+
+    it("compaction on one doc should not affect the other", async () => {
+      const docA = new Y.Doc();
+      const docB = new Y.Doc();
+      const pA = new SqlitePersistence("doc-a", docA, { dbPath: SHARED_DB });
+      const pB = new SqlitePersistence("doc-b", docB, { dbPath: SHARED_DB });
+      pA._storeTimeout = 0;
+      await pA.whenSynced;
+      await pB.whenSynced;
+
+      // Add data to doc-b
+      docB.getArray("list").push(["item-1", "item-2", "item-3"]);
+      await wait(50);
+
+      const docBCountBefore = getUpdateCount("doc-b", SHARED_DB);
+
+      // Generate enough updates on doc-a to trigger compaction
+      const arr = docA.getArray("test");
+      for (let i = 0; i < PREFERRED_TRIM_SIZE + 10; i++) {
+        arr.insert(i, [i]);
+      }
+      await wait(200);
+
+      // doc-a was compacted
+      const docACountAfter = getUpdateCount("doc-a", SHARED_DB);
+      expect(docACountAfter).toBeLessThan(PREFERRED_TRIM_SIZE);
+
+      // doc-b update count unchanged
+      const docBCountAfter = getUpdateCount("doc-b", SHARED_DB);
+      expect(docBCountAfter).toBe(docBCountBefore);
+
+      // doc-b data intact
+      fetchUpdates(pB);
+      expect(docB.getArray("list").toArray()).toEqual(["item-1", "item-2", "item-3"]);
+
+      await pA.destroy();
+      await pB.destroy();
+      docA.destroy();
+      docB.destroy();
+    });
+
+    it("should throw if both dir and dbPath are provided", () => {
+      const doc = new Y.Doc();
+      expect(() => {
+        new SqlitePersistence("test", doc, { dir: TEST_DIR, dbPath: SHARED_DB });
+      }).toThrow("Cannot specify both 'dir' and 'dbPath' options");
+      doc.destroy();
+    });
+
+    it("clearData on shared db should only clear own doc data", async () => {
+      const docA = new Y.Doc();
+      const docB = new Y.Doc();
+      const pA = new SqlitePersistence("doc-a", docA, { dbPath: SHARED_DB });
+      const pB = new SqlitePersistence("doc-b", docB, { dbPath: SHARED_DB });
+      await pA.whenSynced;
+      await pB.whenSynced;
+
+      docA.getMap("test").set("key", "a-data");
+      docB.getMap("test").set("key", "b-data");
+      pA.set("meta", "a-meta");
+      pB.set("meta", "b-meta");
+      await wait(50);
+
+      await pB.destroy();
+      docB.destroy();
+
+      // clearData on doc-a
+      await pA.clearData();
+      docA.destroy();
+
+      // File should still exist
+      expect(fs.existsSync(SHARED_DB)).toBe(true);
+
+      // doc-b should be intact
+      const docB2 = new Y.Doc();
+      const pB2 = new SqlitePersistence("doc-b", docB2, { dbPath: SHARED_DB });
+      await pB2.whenSynced;
+      expect(docB2.getMap("test").get("key")).toBe("b-data");
+      expect(pB2.get("meta")).toBe("b-meta");
+
+      // doc-a should be empty
+      const docA2 = new Y.Doc();
+      const pA2 = new SqlitePersistence("doc-a", docA2, { dbPath: SHARED_DB });
+      await pA2.whenSynced;
+      expect(docA2.getMap("test").get("key")).toBeUndefined();
+      expect(pA2.get("meta")).toBeUndefined();
+
+      await pA2.destroy();
+      await pB2.destroy();
+      docA2.destroy();
+      docB2.destroy();
     });
   });
 

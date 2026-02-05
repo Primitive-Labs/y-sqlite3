@@ -13,6 +13,12 @@ export interface SqlitePersistenceOptions {
    * Defaults to current working directory.
    */
   dir?: string;
+  /**
+   * Explicit path to a SQLite file. When provided, multiple documents
+   * can share a single database, isolated by their doc name.
+   * Mutually exclusive with `dir`.
+   */
+  dbPath?: string;
 }
 
 interface UpdateRow {
@@ -41,14 +47,14 @@ export const fetchUpdates = (
 
   // Get count first to check if store is empty
   const countResult = db
-    .prepare("SELECT COUNT(*) as count FROM updates")
-    .get() as CountRow;
+    .prepare("SELECT COUNT(*) as count FROM updates WHERE docName = ?")
+    .get(persistence.name) as CountRow;
   const count = countResult.count;
 
   // Get all updates after our current reference
   const rows = db
-    .prepare("SELECT id, data FROM updates WHERE id > ? ORDER BY id")
-    .all(persistence._dbref) as UpdateRow[];
+    .prepare("SELECT id, data FROM updates WHERE docName = ? AND id > ? ORDER BY id")
+    .all(persistence.name, persistence._dbref) as UpdateRow[];
 
   // Only write initial snapshot if store is empty (fixes unbounded growth bug)
   if (count === 0) {
@@ -76,8 +82,8 @@ export const fetchUpdates = (
 
   // Update size count
   const newCount = db
-    .prepare("SELECT COUNT(*) as count FROM updates")
-    .get() as CountRow;
+    .prepare("SELECT COUNT(*) as count FROM updates WHERE docName = ?")
+    .get(persistence.name) as CountRow;
   persistence._dbsize = newCount.count;
 };
 
@@ -102,33 +108,46 @@ export const storeState = (
     const compact = db.transaction(() => {
       // Add the full state as a new entry
       const result = db
-        .prepare("INSERT INTO updates (data) VALUES (?)")
-        .run(Buffer.from(fullState));
+        .prepare("INSERT INTO updates (docName, data) VALUES (?, ?)")
+        .run(persistence.name, Buffer.from(fullState));
       const newId = result.lastInsertRowid as number;
 
-      // Delete all entries up to (but not including) the new entry
-      db.prepare("DELETE FROM updates WHERE id < ?").run(newId);
+      // Delete all entries for this doc up to (but not including) the new entry
+      db.prepare("DELETE FROM updates WHERE docName = ? AND id < ?").run(persistence.name, newId);
     });
 
     compact();
 
     // Update the count
     const countResult = db
-      .prepare("SELECT COUNT(*) as count FROM updates")
-      .get() as CountRow;
+      .prepare("SELECT COUNT(*) as count FROM updates WHERE docName = ?")
+      .get(persistence.name) as CountRow;
     persistence._dbsize = countResult.count;
   }
 };
 
 /**
- * Clear/delete a document's database file.
+ * Clear/delete a document's database file or its rows in a shared database.
  * @param name - The document name
- * @param dir - Optional directory path
+ * @param dirOrOptions - Directory path (string) or `{ dbPath: string }` for shared databases
  */
-export const clearDocument = (name: string, dir?: string): void => {
-  const dbPath = dir ? path.join(dir, `${name}.sqlite`) : `${name}.sqlite`;
-  if (fs.existsSync(dbPath)) {
-    fs.unlinkSync(dbPath);
+export const clearDocument = (name: string, dirOrOptions?: string | { dbPath: string }): void => {
+  if (dirOrOptions && typeof dirOrOptions === "object" && "dbPath" in dirOrOptions) {
+    // Shared database mode: delete only this doc's rows
+    const sharedPath = dirOrOptions.dbPath;
+    if (fs.existsSync(sharedPath)) {
+      const db = new Database(sharedPath);
+      db.prepare("DELETE FROM updates WHERE docName = ?").run(name);
+      db.prepare("DELETE FROM custom WHERE docName = ?").run(name);
+      db.close();
+    }
+  } else {
+    // Legacy mode: delete the whole file
+    const dir = dirOrOptions as string | undefined;
+    const dbFilePath = dir ? path.join(dir, `${name}.sqlite`) : `${name}.sqlite`;
+    if (fs.existsSync(dbFilePath)) {
+      fs.unlinkSync(dbFilePath);
+    }
   }
 };
 
@@ -171,6 +190,7 @@ export class SqlitePersistence extends Observable<string> {
   _storeTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
   private _dbPath: string;
+  private _isSharedDb: boolean;
   private _storeUpdate: (update: Uint8Array, origin: any) => void;
 
   constructor(name: string, doc: Y.Doc, options?: SqlitePersistenceOptions) {
@@ -178,10 +198,20 @@ export class SqlitePersistence extends Observable<string> {
     this.doc = doc;
     this.name = name;
 
+    if (options?.dir && options?.dbPath) {
+      throw new Error("Cannot specify both 'dir' and 'dbPath' options");
+    }
+
     // Determine database path
-    this._dbPath = options?.dir
-      ? path.join(options.dir, `${name}.sqlite`)
-      : `${name}.sqlite`;
+    if (options?.dbPath) {
+      this._dbPath = options.dbPath;
+      this._isSharedDb = true;
+    } else {
+      this._dbPath = options?.dir
+        ? path.join(options.dir, `${name}.sqlite`)
+        : `${name}.sqlite`;
+      this._isSharedDb = false;
+    }
 
     // Ensure directory exists
     const dir = path.dirname(this._dbPath);
@@ -196,11 +226,15 @@ export class SqlitePersistence extends Observable<string> {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS updates (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        docName TEXT NOT NULL,
         data BLOB NOT NULL
       );
+      CREATE INDEX IF NOT EXISTS idx_updates_docName ON updates(docName);
       CREATE TABLE IF NOT EXISTS custom (
-        key TEXT PRIMARY KEY,
-        value TEXT
+        docName TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT,
+        PRIMARY KEY (docName, key)
       );
     `);
 
@@ -214,8 +248,8 @@ export class SqlitePersistence extends Observable<string> {
       if (this.db && origin !== this && !this._destroyed) {
         // Store the update
         this.db
-          .prepare("INSERT INTO updates (data) VALUES (?)")
-          .run(Buffer.from(update));
+          .prepare("INSERT INTO updates (docName, data) VALUES (?, ?)")
+          .run(this.name, Buffer.from(update));
         this._dbsize++;
 
         // Check if we need to compact
@@ -253,8 +287,8 @@ export class SqlitePersistence extends Observable<string> {
       if (this.db && !this._destroyed) {
         const initialState = Y.encodeStateAsUpdate(this.doc);
         this.db
-          .prepare("INSERT INTO updates (data) VALUES (?)")
-          .run(Buffer.from(initialState));
+          .prepare("INSERT INTO updates (docName, data) VALUES (?, ?)")
+          .run(this.name, Buffer.from(initialState));
       }
     };
 
@@ -291,8 +325,18 @@ export class SqlitePersistence extends Observable<string> {
    */
   async clearData(): Promise<void> {
     await this.destroy();
-    if (fs.existsSync(this._dbPath)) {
-      fs.unlinkSync(this._dbPath);
+    if (this._isSharedDb) {
+      // Shared database: delete only this doc's rows, not the file
+      if (fs.existsSync(this._dbPath)) {
+        const db = new Database(this._dbPath);
+        db.prepare("DELETE FROM updates WHERE docName = ?").run(this.name);
+        db.prepare("DELETE FROM custom WHERE docName = ?").run(this.name);
+        db.close();
+      }
+    } else {
+      if (fs.existsSync(this._dbPath)) {
+        fs.unlinkSync(this._dbPath);
+      }
     }
   }
 
@@ -304,8 +348,8 @@ export class SqlitePersistence extends Observable<string> {
     if (!this.db || this._destroyed) return undefined;
 
     const row = this.db
-      .prepare("SELECT value FROM custom WHERE key = ?")
-      .get(String(key)) as { value: string } | undefined;
+      .prepare("SELECT value FROM custom WHERE docName = ? AND key = ?")
+      .get(this.name, String(key)) as { value: string } | undefined;
 
     if (!row) return undefined;
 
@@ -326,8 +370,8 @@ export class SqlitePersistence extends Observable<string> {
 
     const serialized = JSON.stringify(value);
     this.db
-      .prepare("INSERT OR REPLACE INTO custom (key, value) VALUES (?, ?)")
-      .run(String(key), serialized);
+      .prepare("INSERT OR REPLACE INTO custom (docName, key, value) VALUES (?, ?, ?)")
+      .run(this.name, String(key), serialized);
   }
 
   /**
@@ -337,7 +381,7 @@ export class SqlitePersistence extends Observable<string> {
   del(key: string | number): void {
     if (!this.db || this._destroyed) return;
 
-    this.db.prepare("DELETE FROM custom WHERE key = ?").run(String(key));
+    this.db.prepare("DELETE FROM custom WHERE docName = ? AND key = ?").run(this.name, String(key));
   }
 }
 
