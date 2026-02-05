@@ -42,31 +42,6 @@ ymap.set('key', 'value');
 // Changes are automatically persisted to SQLite
 ```
 
-### With js-bao
-
-```typescript
-import { initJsBao } from 'js-bao/node';
-import { SqlitePersistence } from 'y-sqlite3';
-import * as Y from 'yjs';
-
-// Create document with SQLite persistence
-const doc = new Y.Doc();
-const persistence = new SqlitePersistence('my-document', doc, {
-  dir: './data'  // Optional: specify database directory
-});
-await persistence.whenSynced;
-
-// Initialize js-bao
-const { connectDocument } = await initJsBao({
-  databaseConfig: { type: 'node-sqlite' }
-});
-
-// Connect the persisted document
-await connectDocument('my-document', doc, 'read-write');
-
-// Now use js-bao models...
-```
-
 ### Specifying Database Location
 
 ```typescript
