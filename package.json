@@ -1,0 +1,57 @@
+{
+  "name": "y-sqlite3",
+  "version": "0.1.0",
+  "description": "SQLite persistence provider for Yjs using better-sqlite3 (Node.js)",
+  "type": "module",
+  "main": "./dist/y-better-sqlite3.cjs",
+  "module": "./dist/y-better-sqlite3.js",
+  "types": "./dist/y-better-sqlite3.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/y-better-sqlite3.d.ts",
+      "import": "./dist/y-better-sqlite3.js",
+      "require": "./dist/y-better-sqlite3.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsup src/y-better-sqlite3.ts --format esm,cjs --dts --clean",
+    "build:watch": "tsup src/y-better-sqlite3.ts --format esm,cjs --dts --watch",
+    "test": "vitest run tests/y-better-sqlite3.test.ts",
+    "test:integration": "vitest run tests/js-bao-integration.test.ts",
+    "test:all": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Primitive-Labs/y-sqlite3.git"
+  },
+  "keywords": [
+    "Yjs",
+    "CRDT",
+    "offline",
+    "persistence",
+    "sqlite",
+    "better-sqlite3",
+    "nodejs"
+  ],
+  "author": "Primitive LLC",
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^9.6.0",
+    "lib0": "^0.2.88"
+  },
+  "peerDependencies": {
+    "yjs": "^13.6.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.9",
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.0.0"
+  }
+}
